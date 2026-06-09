@@ -1,0 +1,23 @@
+# Definições do promtail 
+# É o agente necessário que enviar os logs para o Loki. Ele lê os logs do container e mandar para o serviço Loki
+# Ele lê os logs, lembra onde parou, processo no formato docker e envia para o Loki
+server: 
+  http_listen_port: 9080 # Define a porta interna como a 9080
+  grpc_listen_port: 0 # Desativa o servidor gRPC
+
+positions:
+  filename: /tmp/positions.yaml # Define onde o promtail salva a arquivo de posições -> Esse arquivo guarda até onde esse sistema já leu os log, assim quando ele for reiniciado ele não irá precisar reler todos os logs do sistema
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push # Destinos para onde o promtail envia os logs
+
+scrape_configs:
+  - job_name: docker # Começa o trabalho Docker
+    static_configs:
+      - targets: [localhost] # Define o localhost como alvo -> isso é apenas simbólico pois o mais importante para o promtail é os locais dos arquivos
+        labels:
+          job: docker # Ajuda a filtrar os logs no loki
+          __path__: /var/lib/docker/containers/*/*.log # Define o caminho dos arquivos de log no container
+
+    pipeline_stages: # Começa o processamento de logs
+      - docker: {} # Aplica o docker -> extrai os campos do Loki para uma mensagem mais limpa

@@ -1,0 +1,37 @@
+# Secrets and local credentials
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+**/.htpasswd
+NOTA_TECNICA.md
+infrastructure/sequencer/test_telemetry.py
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Docker and runtime data
+*.log
+*.pid
+mosquitto/data/
+mosquitto/log/
+influxdb_data/
+grafana_data/
+redis_data/
+loki_data/
+promtail_positions/
+
+# OS and editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

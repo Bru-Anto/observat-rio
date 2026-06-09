@@ -1,0 +1,5 @@
+''' Requisitos do sistema ''' 
+
+fastapi # Instala p FastAPI
+uvicorn # Servidor ASGI
+python-multipart # Suporte de leitura de dados

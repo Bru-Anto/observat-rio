@@ -1,0 +1,6 @@
+# requisitos do sequenciador 
+fastapi
+uvicorn
+paho-mqtt
+requests
+redis

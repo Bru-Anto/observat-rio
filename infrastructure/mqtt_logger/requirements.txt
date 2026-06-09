@@ -1,0 +1,2 @@
+''' Requisitos do sistema '''
+paho-mqtt==1.6.1 # É o cliente MQTT usado 

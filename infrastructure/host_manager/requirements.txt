@@ -1,0 +1,6 @@
+#requisitos do host manager
+streamlit
+requests
+pandas
+plotly
+docker 

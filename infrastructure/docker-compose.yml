@@ -1,0 +1,235 @@
+# Configurações da aplicação Docker 
+# É um mapa do sistema -> define todos os containers, redes, volumes, portas e dependência do sistema 
+# Fluxo no container: 
+# alpaca_sim -> telegraf -> mosquitto -> sequencer
+# alpaca_sim -> telegraf -> influxdb -> grafana
+# containers -> promtail -> loki -> grafana
+# usuário -> nginx -> host_manager / grafana / sequencer / influxdb
+# Junta todas as peças do sistema e controla a ordem que elas começam, a rede, a permanência de dados e a exposição para o usuário 
+
+
+# Lista de serviços do docker, cada um dos itens abaico é um container ou um conjunto de containers
+services:
+# Simulador
+  alpaca_sim: # Começa o serviço do simulador 
+    build:
+      context: ./alpaca_sim # Construído com base no arquivo do simulador que foi definido anteriormente 
+    container_name: alpaca_sim # Nome do container 
+    networks: [observatory_net] # Conecta o container do simulador à rede
+    restart: unless-stopped # Reinicia automaticamente se ele cair exceto se ele for parado manualmente 
+    healthcheck: # Verficações de saúde do container
+      test: ["CMD-SHELL", "python -c \"import urllib.request; import sys; urllib.request.urlopen('http://localhost/management/apiversions', timeout=2).read(); sys.exit(0)\""] # Comando dentro do container para verificar se o API está respondendo, se o API responder significa que o container está saudável
+      interval: 10s # Executa essa verificação a cada 10 segundos 
+      timeout: 5s # Tempo de verificação é de no máximo 5 segundos 
+      retries: 10 # Tenta 10 vezes antes de dizer que o container não está saudável 
+# Proxy reverso
+  nginx: # Começa o serviço do proxy
+    image: nginx:alpine # Usa a imagem do docker nginx:alpine 
+    container_name: nginx # Nome do container
+    ports:
+      - "8080:80" # Publica na porta 8080 a porta 80 do container
+    networks: [observatory_net] # Conecta o container do proxy à rede
+    volumes: 
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro # Monta a configuração do container dentro do docker, nesse momente ele faz somente a leitura 
+      - ./nginx/.htpasswd:/etc/nginx/.htpasswd:ro # Monta as configurações de senha do proxy dentro do container, faz somente a leitura
+    depends_on:
+      - host_manager # Define que o nginx depende do host manager
+    restart: unless-stopped # Reinicia automaticamente se ele cair exceto se ele for parado manualmente
+
+# Broker MQTT
+  mosquitto: # Começa o serviço do broker
+    image: eclipse-mosquitto:2.0 # Usa a imagem do mosquitto na sua versão 2
+    container_name: mosquitto # Nome do container 
+    volumes: 
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro # Monta a configuração do container dentro do docker, nesse momente ele faz somente a leitura 
+      - mosquitto_data:/mosquitto/data # Volume persistente de dados 
+      - mosquitto_logs:/mosquitto/log # Volume persistente de logs
+    networks: [observatory_net] # Conecta o container do broker à rede
+    restart: unless-stopped # Reinicia automaticamente se ele cair exceto se ele for parado manualmente
+    healthcheck: # Verifica a saúde do container
+      test: ["CMD-SHELL", "mosquitto_sub -h localhost -t '$$SYS/broker/uptime' -C 1 -W 3 >/dev/null 2>&1"] # Tenta assinar o tópico 
+      interval: 10s # Testa cada 10 segundos
+      timeout: 5s # A verificação pode demorar no máximo 5 segundos 
+      retries: 10 # Tenta 10 vezes antes de dizer que o container não está saudável
+
+# Redis
+  redis: # Começa o serviço do redis -> usado para guardar o estado atual do observatório 
+    image: redis:7-alpine # Usa o redis 7 em imagem Alpine 
+    container_name: redis # Nome do container
+    command: redis-server --appendonly yes # Inicia o redis com o AOF ligado -> o AOF ajuda na persistencia dos dados
+    volumes:
+      - redis_data:/data # Volume de dados do redis 
+    networks: [observatory_net] # Conecta o container do redis a rede
+    restart: unless-stopped # Reinicia automaticamente se ele cair exceto se ele for parado manualmente
+    healthcheck: # Verifica a saúde do container
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"] # Testa para receber a responsta PONG
+      interval: 10s # Testa cada 10 segundos
+      timeout: 3s # A verificação pode demorar no máximo 3 segundos
+      retries: 10 # Tenta 10 vezes antes de dizer que o container não está saudável
+
+# InfluxDB 
+  influxdb: # Começa o serviço do InfluxDB
+    image: influxdb:2.7-alpine # Usa a imagem InfluxDB 2.7 Alpine
+    container_name: influxdb # Nome fixo do container 
+    ports:
+    - "8086:8086" # Publica a porta 8086 do container na porta 8086
+    environment: # Variáveis de ambiente 
+      DOCKER_INFLUXDB_INIT_MODE: setup # Inicia o Influx em modo setup automático
+      # Pega os dados de usuário, senha e, organização, bucket e token que estão no .env
+      DOCKER_INFLUXDB_INIT_USERNAME: ${INFLUXDB_USER} 
+      DOCKER_INFLUXDB_INIT_PASSWORD: ${INFLUXDB_PASSWORD}
+      DOCKER_INFLUXDB_INIT_ORG: ${INFLUXDB_ORG}
+      DOCKER_INFLUXDB_INIT_BUCKET: ${INFLUXDB_BUCKET}
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: ${INFLUXDB_TOKEN}
+    volumes:
+      - influxdb_data:/var/lib/influxdb2 # Guarda os dados do Influx no volume influxdb_data
+    networks: [observatory_net] # Conecta o container do redis à rede
+    restart: unless-stopped # Reinicia automaticamente se ele cair exceto se ele for parado manualmente
+    healthcheck: # Verifica a saúde do container 
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8086/health | grep -q pass"] # Consulta o \health do influx e espera o pass
+      interval: 10s # Testa cada 10 segundos
+      timeout: 5s # A verificação pode demorar no máximo 5 segundos 
+      retries: 20 # Tenta 10 vezes antes de dizer que o container não está saudável
+
+# Telegraf
+  telegraf: # Começa o serviço do telegraf
+    image: telegraf:1.29-alpine # Usa a imagem do telegraf do docker na versão 1.29
+    container_name: telegraf # Define o nome do conatiner 
+    volumes:
+      - ./telegraf/telegraf.conf:/etc/telegraf/telegraf.conf:ro # Monta o arquivo de configurações do telegraf dentro do container, somente lê este arquivo 
+    environment: # Variáveis de ambiente 
+    # Passa o token, a organização e o bucket de onde as informações serão gravadas
+      INFLUXDB_TOKEN: ${INFLUXDB_TOKEN}
+      INFLUXDB_ORG: ${INFLUXDB_ORG}
+      INFLUXDB_BUCKET: ${INFLUXDB_BUCKET}
+    depends_on: # Dependências
+      mosquitto: 
+        condition: service_healthy # Deepnde de o serviço do mosquitto estar saudável
+      influxdb:
+        condition: service_healthy # Depende de o serviço do influx estar saudável
+      alpaca_sim:
+        condition: service_healthy # Depende de o serviço do simulador estar saudável
+    networks: [observatory_net] # Conecta o container à rede 
+    restart: unless-stopped # Reinicia automaticamente se ele cair exceto se ele for parado manualmente
+
+# Sequenciador 
+  sequencer: # Começa o serviço do sequencer
+    build:
+      context: ./sequencer # Constrói a imagem no container
+    container_name: sequencer # Nome do container 
+    environment: # Variáveis de ambiente
+      ALPACA_URL: http://alpaca_sim:80 # URL do simulador
+      MQTT_BROKER: mosquitto # Host do MQTT
+      MQTT_PORT: "1883" # Porta do MQTT
+      REDIS_HOST: redis # Host do redis 
+      REDIS_PORT: "6379" # Porta do redis
+      LOG_LEVEL: INFO # Configura dos logs como info
+      PYTHONUNBUFFERED: "1" # logs sem buffer
+      MAX_WIND: "40.0" # Define que vento acima de 40 não é seguro
+      SAFE_WIND: "30.0" # Define que vento abaixo de 30 é seguro 
+      RAIN_THRESHOLD: "0.0" # Chuva acima de 0 é inseguro
+      AUTO_OPEN_ENABLED: "false" # Abertura automática do domo desligada
+      AUTO_OPEN_STABLE_SECONDS: "120" # Se a abetura automática estiver ligada espera 120 de tempo estável
+      AUTO_OPEN_COOLDOWN_SECONDS: "60" # Aguarda 60 segundos entre as tentativas de abertura
+    depends_on: # Dependências 
+      alpaca_sim: 
+        condition: service_healthy # Depende do simulador estar saudável
+      mosquitto:
+        condition: service_healthy # Depende do MQTT estar saudável 
+      redis:
+        condition: service_healthy # Depende do redis estar saudável
+    networks: [observatory_net] # Conecta o container à rede
+    restart: unless-stopped # Reinicia automaticamente se ele cair exceto se ele for parado manualmente
+
+# Grafana 
+  grafana: # Começa o serviço do grafana 
+    image: grafana/grafana-oss:10.3.1 # Usa a imagem do grafana oss na versão 10.3.1
+    container_name: grafana # Define o nome do container como grafana 
+    environment: # Variáveis de ambiente 
+      GF_SERVER_ROOT_URL: "http://localhost:8080/grafana/" # Define no grafana que o seu URL público é o /grafana/
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true" # Permite o grafana servir em subcaminho 
+    volumes:
+      - grafana_data:/var/lib/grafana # Persiste os dados do grafana 
+    depends_on: # Dependências
+      influxdb:
+        condition: service_healthy # Depende do influx estar saudável 
+    networks: [observatory_net] # Conecta o container à rede
+    restart: unless-stopped # Reinicia automaticamente se ele cair exceto se ele for parado manualmente
+
+# Loki
+  loki: # Começa o serviço do loki
+    image: grafana/loki:2.9.4 # Usa a imagem do loki na versão 2.9.4
+    container_name: loki # Define o nome do container
+    command: -config.file=/etc/loki/local-config.yaml # Inicia o loki com o arquivo de configuração do mesmo
+    volumes:
+      - loki_data:/loki # Persiste os dados do Loki
+    networks: [observatory_net] # Conecta o container à rede
+    restart: unless-stopped # Reinicia automaticamente se ele cair exceto se ele for parado manualmente
+
+# Promtail
+  promtail: # Começa o serviço do promtail
+    image: grafana/promtail:2.9.4 # Usa a imagem do promtail na versão 2.9.4 
+    container_name: promtail # Nome do container 
+    volumes:
+      - ./promtail/promtail.yml:/etc/promtail/config.yaml:ro # Monta a configuração do promtail dentro do container, apenas leitura
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro # Monta os logs dentro do container, somente leitura
+      - /var/run/docker.sock:/var/run/docker.sock:ro # Monta o socket do docker, somente leitura
+      - promtail_positions:/tmp # Guarda as posições do promtail
+    command: -config.file=/etc/promtail/config.yaml # Manda o promtail usar o arquivo de configurações
+    depends_on: # Dependências
+      loki:
+        condition: service_started # Espera o loki iniciar 
+    networks: [observatory_net] # Conecta o container à rede 
+    restart: unless-stopped # Reinicia automaticamente se ele cair exceto se ele for parado manualmente
+
+# Host manager
+  host_manager: # Começa o serviço do host manager
+    build: ./host_manager # Constrói a imagem usando o arquivo ./host_manager
+    container_name: host_manager # Nome do container 
+    expose: # Expõe na porta 9000, é uma porta interna do container apenas, quem expões publicamente é o nginx
+      - "9000"
+    environment: # Variáveis de ambiente 
+      SEQUENCER_URL: http://sequencer:8000 # URL do sequenciador
+      GRAFANA_URL: http://grafana:3000 # URL do grafana
+      GRAFANA_TOKEN: ${GRAFANA_TOKEN} # Usa o token do grafana definido no .env
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock # Monta o socker 
+    networks: [observatory_net] # Conecta o container à rede
+    restart: unless-stopped # Reinicia automaticamente se ele cair exceto se ele for parado manualmente
+
+# Node Exporter 
+  node_exporter: # Começa o serviço do node
+    image: prom/node-exporter:v1.7.0 # Usa a imagem do node na sua versão 1.7.0
+    container_name: node_exporter # Nome do container 
+    networks: [observatory_net] # Conecta o container à rede
+    restart: unless-stopped # Reinicia automaticamente se ele cair exceto se ele for parado manualmente
+
+# MQTT logger
+  mqtt_logger: # Começa o serviço do logger
+    build: ./mqtt_logger # Contrói a imagem baseado no arquivo ./mqtt_logger
+    container_name: mqtt_logger # Nome do container 
+    environment: # Variáveis de ambiente 
+      MQTT_HOST: mosquitto # Host do MQTT
+      MQTT_PORT: "1883" # Porta do MQTT
+      MQTT_TOPIC: observatory/telemetry/# # Tópico que irá assinar, usa todos os subtópicos
+    depends_on: # Dependências 
+      mosquitto: 
+        condition: service_healthy # Depende do mosquitto estar saudável
+    networks: [observatory_net] # Conecta o container à rede
+    restart: unless-stopped # Reinicia automaticamente se ele cair exceto se ele for parado manualmente
+
+# Rede
+networks:
+  observatory_net: # Define a rede
+    name: observatory_net # Define o nome da rede
+    driver: bridge # Usa o bridge para a comunicação entre os container que estão no mesmo host
+
+# Volumes 
+volumes: 
+  influxdb_data: 
+  grafana_data:
+  redis_data:
+  mosquitto_data:
+  mosquitto_logs:
+  loki_data:
+  promtail_positions:
