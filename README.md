@@ -76,20 +76,3 @@ python -m unittest discover infrastructure/sequencer -p test_*.py
 python -m py_compile infrastructure\sequencer\main.py infrastructure\sequencer\telemetry.py
 ```
 
-## GitHub
-
-Este repositório ignora arquivos sensíveis como `.env` e `.htpasswd`. Antes de publicar, confira:
-
-```powershell
-git status --short
-git add .
-git commit -m "Initial observatory control system"
-```
-
-Depois crie um repositório vazio no GitHub e conecte o remoto:
-
-```powershell
-git remote add origin https://github.com/SEU_USUARIO/NOME_DO_REPOSITORIO.git
-git branch -M main
-git push -u origin main
-```
